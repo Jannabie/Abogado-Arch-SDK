@@ -1,49 +1,78 @@
+import sys
+import json
 import os
 
-def kalibrasi_visual_final_banget(file_path, output_path):
-    # Mapping Terjemahan - Menyamakan Garis Tengah (Center-Axis)
-    # Memulai: 14 byte | Memuat: 10 byte | CGs: 10 byte | Staff Credit: 12 byte
-    translations = {
-        "最初から始める": "   Memulai    ", # 3 spasi depan (Total 14)
-        "ロードする":     "  Arsip  ",     # 2 spasi depan (Total 10)
-        "ＣＧモード":     " CG List    ",     # 3 spasi depan agar huruf C di tengah (Total 10)
-        "サウンドモード": " Staff Credit",  # 1 spasi depan (Total 12)
-        "シーン回想":     "  Adegan    ",     # 2 spasi depan (Total 10)
-    }
+def inject_scf(json_path, scf_path):
+    """Inject translated strings from JSON back into the SCF binary file."""
+    print(f"Injecting: {json_path} -> {scf_path}")
 
-    try:
-        with open(file_path, 'rb') as f:
-            data = bytearray(f.read())
-            orig_size = len(data) # Harus 604 bytes
+    if not os.path.isfile(json_path):
+        print(f"Error: JSON file tidak ditemukan: {json_path}")
+        sys.exit(1)
+    if not os.path.isfile(scf_path):
+        print(f"Error: SCF file tidak ditemukan: {scf_path}")
+        sys.exit(1)
 
-        for original, replacement in translations.items():
+    with open(json_path, 'r', encoding='utf-8') as f:
+        entries = json.load(f)
+
+    with open(scf_path, 'rb') as f:
+        data = bytearray(f.read())
+
+    orig_size = len(data)
+    replaced = 0
+    skipped = 0
+
+    for entry in entries:
+        original = entry.get("original", "")
+        translated = entry.get("translated", original)
+
+        if original == translated:
+            continue  # Skip untranslated strings
+
+        try:
             orig_bytes = original.encode('shift_jis')
-            target_len = len(orig_bytes)
-            
-            # Encode dan kunci panjang byte agar file tidak rusak
-            repl_bytes = replacement.encode('shift_jis')
-            
-            if len(repl_bytes) < target_len:
-                repl_bytes = repl_bytes.ljust(target_len, b'\x20')
-            elif len(repl_bytes) > target_len:
-                repl_bytes = repl_bytes[:target_len]
+            trans_bytes = translated.encode('shift_jis')
+        except UnicodeEncodeError as e:
+            print(f"  [SKIP] Encoding error untuk '{original}': {e}")
+            skipped += 1
+            continue
 
-            idx = data.find(orig_bytes)
-            if idx != -1:
-                data[idx:idx+target_len] = repl_bytes
-                print(f"Centering: [{replacement}]")
+        if len(trans_bytes) > len(orig_bytes):
+            # Trim to fit - cannot expand binary size
+            trans_bytes = trans_bytes[:len(orig_bytes)]
+            print(f"  [TRIM] '{translated}' dipotong agar sesuai ukuran slot.")
+        elif len(trans_bytes) < len(orig_bytes):
+            # Pad with spaces to maintain binary size
+            trans_bytes = trans_bytes.ljust(len(orig_bytes), b'\x20')
 
-        with open(output_path, 'wb') as f:
-            f.write(data)
-            
-        if orig_size == os.path.getsize(output_path):
-            print(f"\nSTATUS: SEMPURNA! Ukuran tetap {orig_size} bytes.")
+        idx = data.find(orig_bytes)
+        if idx != -1:
+            data[idx:idx+len(orig_bytes)] = trans_bytes
+            print(f"  [OK] '{original}' -> '{translated}'")
+            replaced += 1
         else:
-            print("\nSTATUS: GAGAL! Ukuran file berubah.")
+            print(f"  [NOT FOUND] '{original}' (mungkin sudah diterjemahkan atau berbeda encoding)")
+            skipped += 1
 
-    except Exception as e:
-        print(f"Error: {e}")
+    # Write output next to the SCF file with _injected suffix
+    out_path = os.path.splitext(scf_path)[0] + "_injected.SCF"
+    with open(out_path, 'wb') as f:
+        f.write(data)
+
+    new_size = len(data)
+    print(f"\nSelesai: {replaced} string diinjeksi, {skipped} dilewati.")
+    print(f"Ukuran asli: {orig_size} bytes | Ukuran baru: {new_size} bytes")
+    if orig_size != new_size:
+        print("PERINGATAN: Ukuran file berubah! Ini dapat merusak game.")
+    else:
+        print("Ukuran file tetap sama.")
+    print(f"Output: {out_path}")
+
 
 if __name__ == "__main__":
-    # RENAME 'SCN002_FINAL.SCF' jadi 'SCN002.SCF' sebelum repack
-    kalibrasi_visual_final_banget('SCN002.SCF', 'SCN002_FINAL.SCF')
+    if len(sys.argv) < 3:
+        print("Usage: python injector_scf.py <translation.json> <file.SCF>")
+        sys.exit(1)
+
+    inject_scf(sys.argv[1], sys.argv[2])
